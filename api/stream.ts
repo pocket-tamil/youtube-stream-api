@@ -4,7 +4,7 @@ import { Innertube, UniversalCache, Parser } from "youtubei.js";
 Parser.setParserErrorHandler(() => {});
 
 export const config = {
-  runtime: "nodejs",
+  maxDuration: 30,
 };
 
 type RequestQuery = {
