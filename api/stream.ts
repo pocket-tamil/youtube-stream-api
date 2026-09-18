@@ -213,25 +213,38 @@ async function findLiveVideoOnChannel(
 async function getHlsManifest(videoId: string): Promise<{ hlsUrl: string; title: string }> {
   const yt = await getYouTubeClient();
 
-  // YouTube desktop WEB client no longer provides HLS (.m3u8) manifests directly;
-  // mobile clients (ANDROID / MWEB) provide the valid .m3u8 HLS playlist.
+  // Try mobile clients in order — they return hls_manifest_url for live streams.
+  // hls_manifest_url only exists for active live/premiere content, making its
+  // presence a more reliable signal than basic_info.is_live (which can be
+  // incorrect depending on the server geo/IP Vercel assigns).
   let info: any = null;
-  try {
-    info = await yt.getInfo(videoId, { client: "ANDROID" });
-  } catch {
-    // Fallback if ANDROID client errors
-  }
 
-  if (!info || !info.streaming_data?.hls_manifest_url) {
+  for (const client of ["ANDROID", "IOS", "MWEB"] as const) {
     try {
-      info = await yt.getInfo(videoId, { client: "MWEB" });
+      const attempt = await yt.getInfo(videoId, { client });
+      if (attempt?.streaming_data?.hls_manifest_url) {
+        info = attempt;
+        break;
+      }
+      // Keep last successful response for richer error messages
+      if (!info && attempt) info = attempt;
     } catch {
-      // Fallback
+      // Try next client
     }
   }
 
-  if (!info || !info.streaming_data?.hls_manifest_url) {
-    info = await yt.getInfo(videoId);
+  // Last resort: default WEB client
+  if (!info?.streaming_data?.hls_manifest_url) {
+    try {
+      const attempt = await yt.getInfo(videoId);
+      if (attempt?.streaming_data?.hls_manifest_url) {
+        info = attempt;
+      } else if (!info && attempt) {
+        info = attempt;
+      }
+    } catch {
+      // ignore
+    }
   }
 
   if (!info) {
@@ -239,29 +252,24 @@ async function getHlsManifest(videoId: string): Promise<{ hlsUrl: string; title:
   }
 
   const basicInfo: any = info.basic_info || {};
-
-  const isLive =
-    basicInfo.is_live === true ||
-    basicInfo.isLive === true;
-
-  if (!isLive) {
-    throw new Error("The supplied video is not currently live");
-  }
-
   const streamingData: any = info.streaming_data;
 
-  if (!streamingData) {
-    throw new Error("YouTube did not return streaming data");
-  }
-
   const hlsUrl =
-    streamingData.hls_manifest_url ||
-    streamingData.hlsManifestUrl;
+    streamingData?.hls_manifest_url ||
+    streamingData?.hlsManifestUrl;
 
+  // hls_manifest_url only exists for live/premiere streams.
+  // Only check is_live if no HLS URL was found.
   if (!hlsUrl) {
-    throw new Error(
-      "No HLS .m3u8 manifest was returned by YouTube"
-    );
+    const isLive =
+      basicInfo.is_live === true ||
+      basicInfo.isLive === true ||
+      basicInfo.is_live_content === true;
+
+    if (!isLive) {
+      throw new Error("The supplied video is not currently live");
+    }
+    throw new Error("No HLS .m3u8 manifest was returned by YouTube");
   }
 
   return { hlsUrl, title: basicInfo.title || "" };
